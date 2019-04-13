@@ -8,14 +8,7 @@ import git
 import git.repo.fun
 
 
-@click.group('main')
-def smart_git():
-    pass
-
-
-repo_path_argument = click.argument('repo_path',
-                                    type=click.Path(exists=True, file_okay=False, dir_okay=True, writable=True),
-                                    default='.')
+CHANGES_FILE_NAME = '.changes'
 
 
 def path_for_git(path: str):
@@ -28,7 +21,21 @@ ALIAS_COMMAND = '!{} {}'.format(PYTHON_PATH, path_for_git(__file__))
 
 PRE_COMMIT_HOOK = '{python} {script} pre-commit'.format(python=PYTHON_PATH, script=path_for_git(__file__))
 
-CHANGES_FILE_NAME = '.changes'
+
+@click.group('main')
+def smart_git():
+    """
+    A git plugin that helps resolve merge conflicts using semantic analysis of changes on the commit level.
+
+    Start by using set-alias to register a shortcut for accessing the plugin (via 'git smart <command>'), then install
+    the plugin on the target repository using 'git smart install [<path-to-repo>]'.
+    """
+    pass
+
+
+repo_path_argument = click.argument('repo_path',
+                                    type=click.Path(exists=True, file_okay=False, dir_okay=True, writable=True),
+                                    default='.')
 
 
 class RepoStatus(Enum):
@@ -96,12 +103,14 @@ def get_repo(repo_path: str, *expected_statuses: RepoStatus):
 @smart_git.command('status')
 @repo_path_argument
 def print_status(repo_path: str):
+    """ Check the status of the repository with respect to the smart git plugin. """
     click.echo(RepoStatus.of(repo_path).name)
 
 
 @smart_git.command()
 @repo_path_argument
 def install(repo_path: str):
+    """ Install the smart git plugin on the given repository and enable it. """
     repo, _ = get_repo(repo_path, RepoStatus.not_installed)
     config_writer = repo.config_writer()
     config_writer.add_section('smart')
@@ -118,6 +127,11 @@ def install(repo_path: str):
 @smart_git.command()
 @repo_path_argument
 def uninstall(repo_path: str):
+    """
+    Uninstall the smart git plugin from the given repository.
+
+    This will also remove any traces of bad installations.
+    """
     get_repo(repo_path, RepoStatus.installed_disabled, RepoStatus.installed_enabled, RepoStatus.bad_installation)
     try:
         git.Git(repo_path).config('--remove-section', 'smart')
@@ -134,6 +148,16 @@ def uninstall(repo_path: str):
 @smart_git.command('set-alias')
 @click.option('--local', default=False, is_flag=True)
 def set_alias(local):
+    """
+    Set the 'git smart' git alias allowing access to the plugin commands through the git executable.
+
+    Example - without the alias:
+    python smart_git.py status
+    With the alias:
+    git smart status
+
+    :param local: If passed, will only set the alias for the repository at the current directory.
+    """
     try:
         git.Git('.').config('--global' if not local else '--local', 'alias.smart')
     except git.GitCommandError:
@@ -149,6 +173,13 @@ def set_alias(local):
 @click.option('--local', default=False, is_flag=True)
 @click.option('-f', '--force', default=False, is_flag=True)
 def clear_alias(local, force):
+    """
+    Clear the 'git smart' git alias.
+
+    :param local: If passed, will only clear the alias for the repository at the current directory.
+    :param force: If passed, will also clear the alias in case it is mapped to another (possibly old version or
+                  user-defined) command.
+    """
     try:
         current_alias = git.Git('.').config('--global' if not local else '--local', 'alias.smart')
     except git.GitCommandError:
@@ -166,18 +197,34 @@ def clear_alias(local, force):
 @smart_git.command()
 @repo_path_argument
 def disable(repo_path: str):
+    """
+    Disable smart git for this repository.
+
+    This will disable any git hooks set by the plugin from running.
+    """
     get_repo(repo_path, RepoStatus.installed_enabled)[0].config_writer().set_value('smart', 'enabled', False)
 
 
 @smart_git.command()
 @repo_path_argument
 def enable(repo_path: str):
+    """
+    Disable smart git for this repository.
+
+    This will enable all git hooks set by the plugin.
+    """
     get_repo(repo_path, RepoStatus.installed_disabled)[0].config_writer().set_value('smart', 'enabled', True)
 
 
 @smart_git.command('pre-commit')
 @repo_path_argument
 def pre_commit(repo_path: str):
+    """
+    This command should not normally be used directly.
+
+    This command will be ran before each commit, analyzing and recording the staged changes into the .changes auxiliary
+    file.
+    """
     repo, status = get_repo(repo_path, RepoStatus.installed_disabled, RepoStatus.installed_enabled)
     if status is RepoStatus.installed_disabled:
         return
