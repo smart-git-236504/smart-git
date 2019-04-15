@@ -1,6 +1,7 @@
 import configparser
 import os
 import sys
+import re
 from enum import Enum
 
 import click
@@ -12,7 +13,7 @@ CHANGES_FILE_NAME = '.changes'
 
 
 def path_for_git(path: str):
-    return os.path.abspath(path).replace('\\', '/')
+    return re.sub(r'^([A-Z]):', r'/\1', os.path.abspath(path).replace('\\', '/'))
 
 
 PYTHON_PATH = path_for_git(sys.executable)
