@@ -1,4 +1,5 @@
 import configparser
+import functools
 import os
 import sys
 import re
@@ -77,7 +78,7 @@ class RepoStatus(Enum):
         return RepoStatus.installed_disabled
 
 
-def get_repo(repo_path: str, *expected_statuses: RepoStatus):
+def get_repo(repo_path: str, *expected_statuses: RepoStatus) -> (git.Repo, RepoStatus):
     """
     Open a GitPython Repo object for the given repository path.
 
@@ -101,6 +102,17 @@ def get_repo(repo_path: str, *expected_statuses: RepoStatus):
     return git.Repo(repo_path), current_status
 
 
+def print_post_status(command):
+    @functools.wraps(command)
+    @click.option('--silent', '-q', is_flag=True, default=False, help="Do not print status after command execution.")
+    def wrapped(*args, **kwargs):
+        res = command(*args, **{k: v for k, v in kwargs.items() if k != 'silent'})
+        if not kwargs['silent']:
+            click.echo('[smart-git] Post status: {}'.format(RepoStatus.of(kwargs['repo_path']).name))
+        return res
+    return wrapped
+
+
 @smart_git.command('status')
 @repo_path_argument
 def print_status(repo_path: str):
@@ -110,6 +122,7 @@ def print_status(repo_path: str):
 
 @smart_git.command()
 @repo_path_argument
+@print_post_status
 def install(repo_path: str):
     """ Install the smart git plugin on the given repository and enable it. """
     repo, _ = get_repo(repo_path, RepoStatus.not_installed)
@@ -127,6 +140,7 @@ def install(repo_path: str):
 
 @smart_git.command()
 @repo_path_argument
+@print_post_status
 def uninstall(repo_path: str):
     """
     Uninstall the smart git plugin from the given repository.
@@ -144,6 +158,16 @@ def uninstall(repo_path: str):
         if any('smart_git' in line for line in lines):
             with open(pre_commit_hook_path, 'w') as pre_commit_hook:
                 pre_commit_hook.write('\n'.join(line for line in lines if 'smart_git' not in line))
+
+
+@smart_git.command()
+@repo_path_argument
+@click.pass_context
+@print_post_status
+def reinstall(ctx: click.Context, repo_path: str):
+    if RepoStatus.of(repo_path) != RepoStatus.not_installed:
+        ctx.invoke(uninstall, repo_path=repo_path, silent=True)
+    ctx.invoke(install, repo_path=repo_path, silent=True)
 
 
 @smart_git.command('set-alias')
@@ -197,6 +221,7 @@ def clear_alias(local, force):
 
 @smart_git.command()
 @repo_path_argument
+@print_post_status
 def disable(repo_path: str):
     """
     Disable smart git for this repository.
@@ -208,6 +233,7 @@ def disable(repo_path: str):
 
 @smart_git.command()
 @repo_path_argument
+@print_post_status
 def enable(repo_path: str):
     """
     Disable smart git for this repository.
@@ -230,9 +256,32 @@ def pre_commit(repo_path: str):
     if status is RepoStatus.installed_disabled:
         return
     diff = repo.index.diff(repo.head.commit)
-    with open(os.path.join(repo_path, CHANGES_FILE_NAME), 'a+') as changes_file:
-        changes_file.writelines(d.a_path for d in diff)
-    repo.index.add([CHANGES_FILE_NAME])
+    if not diff:
+        return
+    changes_file_path = os.path.join(repo_path, CHANGES_FILE_NAME)
+    if os.path.isfile(changes_file_path):
+        with open(changes_file_path, 'r') as changes_file:
+            prev_changes = changes_file.read()
+    else:
+        prev_changes = None
+    with open(changes_file_path, 'a+') as changes_file:
+        for d in diff:
+            changes_file.write('{}\n'.format(d.a_path))
+    click.echo(prev_changes)
+    try:
+        repo.index.add([CHANGES_FILE_NAME])
+    except OSError:
+        # User might have run git commit -a, which locks the index, preventing us from adding the .changes file.
+        if prev_changes is None:
+            os.remove(changes_file_path)
+        else:
+            with open(changes_file_path, 'w') as changes_file:
+                changes_file.write(prev_changes)
+        click.echo('[smart-git] ERROR: `git commit -a` is not currently supported with smart-git, please add the files '
+                   'manually before committing (e.g. `git add .`)', err=True)
+        raise click.Abort
+
+    click.echo('[smart-git] Recorded {} change{}.'.format(len(diff), '' if len(diff) == 1 else 's'))
 
 
 def main():
