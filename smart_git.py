@@ -5,10 +5,10 @@ import sys
 import re
 from enum import Enum
 
+from unidiff import PatchSet
 import click
 import git
 import git.repo.fun
-
 
 CHANGES_FILE_NAME = '.changes'
 
@@ -243,6 +243,9 @@ def enable(repo_path: str):
     get_repo(repo_path, RepoStatus.installed_disabled)[0].config_writer().set_value('smart', 'enabled', True)
 
 
+
+
+
 @smart_git.command('pre-commit')
 @repo_path_argument
 def pre_commit(repo_path: str):
@@ -266,8 +269,10 @@ def pre_commit(repo_path: str):
         prev_changes = None
     with open(changes_file_path, 'a+') as changes_file:
         for d in diff:
+            changes = get_changes(repo)
+            changes_per_line = parse_changes(changes)
             changes_file.write('{}\n'.format(d.a_path))
-    click.echo(prev_changes)
+            changes_file.write('\t{}\n'.format(changes_per_line))
     try:
         repo.index.add([CHANGES_FILE_NAME])
     except OSError:
@@ -283,6 +288,36 @@ def pre_commit(repo_path: str):
 
     click.echo('[smart-git] Recorded {} change{}.'.format(len(diff), '' if len(diff) == 1 else 's'))
 
+
+def get_changes(repo):
+    """
+    Creates the diff for a given repository. The diff will be between last commit and current
+    version (in pre-commit).
+    """
+    commits_list = list(repo.iter_commits())
+    last_commit = commits_list[0]
+    changes = repo.git.diff(last_commit, repo.index.diff(None), ignore_blank_lines=True, ignore_space_at_eol=True)
+    return changes
+
+
+def parse_changes(changes):
+    """
+    This function stores all the changed lines in a dictionary where the key is
+    the line number.
+    """
+    patch_set = PatchSet(changes)
+    changes_per_line = dict()
+    for patch_file in patch_set:
+        for hunk in patch_file:
+            for line in hunk:
+                if line.is_context:
+                    continue
+                line_number = line.source_line_no if line.is_removed else line.target_line_no
+                try:
+                    changes_per_line[line_number].append(line.value)
+                except KeyError:
+                    changes_per_line[line_number] = [line.value]
+    return changes_per_line
 
 def main():
     smart_git()
