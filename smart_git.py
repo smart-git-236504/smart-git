@@ -2,13 +2,16 @@ import configparser
 import functools
 import os
 import sys
+import stat
 import re
 from enum import Enum
 
-from unidiff import PatchSet
 import click
 import git
 import git.repo.fun
+
+from rename_detector import RenamingDetector
+
 
 CHANGES_FILE_NAME = '.changes'
 
@@ -30,7 +33,7 @@ def smart_git():
     A git plugin that helps resolve merge conflicts using semantic analysis of changes on the commit level.
 
     Start by using set-alias to register a shortcut for accessing the plugin (via 'git smart <command>'), then install
-    the plugin on the target repository using 'git smart install [<path-to-repo>]'.
+    the plugin on the target repository using 'git smart install [<path-to-repo>].
     """
     pass
 
@@ -38,7 +41,6 @@ def smart_git():
 repo_path_argument = click.argument('repo_path',
                                     type=click.Path(exists=True, file_okay=False, dir_okay=True, writable=True),
                                     default='.')
-
 
 class RepoStatus(Enum):
     """ Denotes the status of the repo w.r.t. our plugin. """
@@ -136,6 +138,8 @@ def install(repo_path: str):
         pre_commit_hook = open(pre_commit_hook_path, 'w')
         pre_commit_hook.write('#!/bin/sh\n')
     pre_commit_hook.write(PRE_COMMIT_HOOK)
+    pre_commit_hook.close()
+    os.chmod(pre_commit_hook_path, stat.S_IRWXU)
 
 
 @smart_git.command()
@@ -243,9 +247,6 @@ def enable(repo_path: str):
     get_repo(repo_path, RepoStatus.installed_disabled)[0].config_writer().set_value('smart', 'enabled', True)
 
 
-
-
-
 @smart_git.command('pre-commit')
 @repo_path_argument
 def pre_commit(repo_path: str):
@@ -258,7 +259,10 @@ def pre_commit(repo_path: str):
     repo, status = get_repo(repo_path, RepoStatus.installed_disabled, RepoStatus.installed_enabled)
     if status is RepoStatus.installed_disabled:
         return
-    diff = repo.index.diff(repo.head.commit)
+    try:
+        diff = repo.index.diff(repo.head.commit)
+    except ValueError:
+        diff = 0
     if not diff:
         return
     changes_file_path = os.path.join(repo_path, CHANGES_FILE_NAME)
@@ -269,10 +273,8 @@ def pre_commit(repo_path: str):
         prev_changes = None
     with open(changes_file_path, 'a+') as changes_file:
         for d in diff:
-            changes = get_changes(repo)
-            changes_per_line = parse_changes(changes)
-            changes_file.write('{}\n'.format(d.a_path))
-            changes_file.write('\t{}\n'.format(changes_per_line))
+            renames = detect_renames(repo, d.a_path)
+            changes_file.write('rename {}\n'.format(renames))
     try:
         repo.index.add([CHANGES_FILE_NAME])
     except OSError:
@@ -288,36 +290,20 @@ def pre_commit(repo_path: str):
 
     click.echo('[smart-git] Recorded {} change{}.'.format(len(diff), '' if len(diff) == 1 else 's'))
 
-
-def get_changes(repo):
-    """
-    Creates the diff for a given repository. The diff will be between last commit and current
-    version (in pre-commit).
-    """
+def detect_renames(repo, diff_file):
     commits_list = list(repo.iter_commits())
     last_commit = commits_list[0]
-    changes = repo.git.diff(last_commit, repo.index.diff(None), ignore_blank_lines=True, ignore_space_at_eol=True)
-    return changes
+    first_file = repo.commit(last_commit).tree[diff_file].data_stream.read()
+    f = open("tmp_last_commit.cpp", "wb+")
+    f.write(first_file)
+    f.close()
+    # TODO clanglib path must be given from user in git smart install command
+    # The following is hard coded! please change with your libclang path.
+    renaming_detector = RenamingDetector("/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/")
+    renames = renaming_detector.get_renamed_variables('tmp_last_commit.cpp', diff_file)
+    os.remove("tmp_last_commit.cpp")
+    return renames
 
-
-def parse_changes(changes):
-    """
-    This function stores all the changed lines in a dictionary where the key is
-    the line number.
-    """
-    patch_set = PatchSet(changes)
-    changes_per_line = dict()
-    for patch_file in patch_set:
-        for hunk in patch_file:
-            for line in hunk:
-                if line.is_context:
-                    continue
-                line_number = line.source_line_no if line.is_removed else line.target_line_no
-                try:
-                    changes_per_line[line_number].append(line.value)
-                except KeyError:
-                    changes_per_line[line_number] = [line.value]
-    return changes_per_line
 
 def main():
     smart_git()
