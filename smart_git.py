@@ -1,16 +1,20 @@
+import ast
 import configparser
 import functools
+import json
 import os
 import sys
 import stat
 import re
+import tempfile
 from enum import Enum
+from typing import Dict, List, Any
 
 import click
 import git
 import git.repo.fun
 
-from rename_detector import RenamingDetector
+from renaming_detector import RenamingDetector
 
 
 CHANGES_FILE_NAME = '.changes'
@@ -127,13 +131,15 @@ def print_status(repo_path: str):
 
 @smart_git.command()
 @repo_path_argument
+@click.argument('libclang_path', type=click.Path(exists=True, file_okay=True, dir_okay=False))
 @print_post_status
-def install(repo_path: str):
+def install(repo_path: str, libclang_path: str):
     """ Install the smart git plugin on the given repository and enable it. """
     repo, _ = get_repo(repo_path, RepoStatus.not_installed)
     config_writer = repo.config_writer()
     config_writer.add_section('smart')
     config_writer.set_value('smart', 'enabled', True)
+    config_writer.set_value('smart', 'libclangPath', repr(libclang_path))
     pre_commit_hook_path = os.path.join(repo_path, '.git', 'hooks', 'pre-commit')
     if os.path.isfile(pre_commit_hook_path):
         pre_commit_hook = open(pre_commit_hook_path, 'a+')
@@ -142,7 +148,6 @@ def install(repo_path: str):
         pre_commit_hook.write('#!/bin/sh\n')
     pre_commit_hook.write(PRE_COMMIT_HOOK)
     pre_commit_hook.close()
-    os.chmod(pre_commit_hook_path, stat.S_IRWXU)
 
 
 @smart_git.command()
@@ -270,16 +275,23 @@ def pre_commit(repo_path: str):
     diff = repo.index.diff(diffed_commit)
     if not diff:
         return
+
+    actions = []
+    for d in diff:
+        actions.extend(detect_renames(repo, diffed_commit, d.a_path))
+    if not actions:
+        return
+
     changes_file_path = os.path.join(repo_path, CHANGES_FILE_NAME)
     if os.path.isfile(changes_file_path):
         with open(changes_file_path, 'r') as changes_file:
             prev_changes = changes_file.read()
     else:
         prev_changes = None
+
     with open(changes_file_path, 'a+') as changes_file:
-        for d in diff:
-            renames = detect_renames(repo, d.a_path)
-            changes_file.write('rename {}\n'.format(renames))
+        changes_file.write('{}\n'.format(json.dumps(actions)))
+
     try:
         repo.index.add([CHANGES_FILE_NAME])
     except OSError:
@@ -295,19 +307,26 @@ def pre_commit(repo_path: str):
 
     click.echo('[smart-git] Recorded {} change{}.'.format(len(diff), '' if len(diff) == 1 else 's'))
 
-def detect_renames(repo, diff_file):
-    commits_list = list(repo.iter_commits())
-    last_commit = commits_list[0]
-    first_file = repo.commit(last_commit).tree[diff_file].data_stream.read()
-    f = open("tmp_last_commit.cpp", "wb+")
-    f.write(first_file)
-    f.close()
-    # TODO clanglib path must be given from user in git smart install command
-    # The following is hard coded! please change with your libclang path.
-    renaming_detector = RenamingDetector("/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/")
-    renames = renaming_detector.get_renamed_variables('tmp_last_commit.cpp', diff_file)
-    os.remove("tmp_last_commit.cpp")
-    return renames
+
+def detect_renames(repo: git.Repo, diff_commit: git.Commit, file_path_spec: str) -> Dict[str, Any]:
+    if not any(file_path_spec.lower().endswith(extension) for extension in ('.c', '.h', '.cpp', '.hpp', '.cc', '.hh',
+                                                                            '.cxx', '.hxx', '.ixx', '.mxx', '.ipp',
+                                                                            '.mpp')):
+        return
+    try:
+        diff_commit.tree
+    except IndexError:
+        # Diffed-against commit has no tree. This can happen with an empty repository.
+        return
+    first_file = diff_commit.tree[file_path_spec].data_stream.read()
+    with tempfile.NamedTemporaryFile(suffix='.cpp') as temp_code_file:
+        temp_code_file.write(first_file)
+        temp_code_file.flush()
+        renaming_detector = RenamingDetector(ast.literal_eval(repo.config_reader().get_value('smart', 'libclangPath')))
+        for from_name, to_name in renaming_detector.get_renamed_variables(temp_code_file.name,
+                                                                          os.path.join(repo.working_dir,
+                                                                                       file_path_spec)).items():
+            yield {'action': 'rename', 'from': from_name, 'to': to_name}
 
 
 def main():
