@@ -15,4 +15,4 @@ int main() {
 }
 '''})
 def test_basic(smart_repo: Repo):
-    assert get_changes(smart_repo) == [[{'action': 'rename', 'from': 'a', 'to': 'b'}]]
+    assert get_changes(smart_repo) == [[], [{'action': 'rename', 'from': 'a', 'to': 'b'}]]

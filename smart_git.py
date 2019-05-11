@@ -279,8 +279,6 @@ def pre_commit(repo_path: str):
     actions = []
     for d in diff:
         actions.extend(detect_renames(repo, diffed_commit, d.a_path))
-    if not actions:
-        return
 
     changes_file_path = os.path.join(repo_path, CHANGES_FILE_NAME)
     if os.path.isfile(changes_file_path):
