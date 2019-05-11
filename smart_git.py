@@ -15,6 +15,9 @@ from rename_detector import RenamingDetector
 
 CHANGES_FILE_NAME = '.changes'
 
+# The SHA1 hash of the 'empty commit' - a magic commit that exists in all git repos
+EMPTY_COMMIT_SHA = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
+
 
 def path_for_git(path: str):
     return re.sub(r'^([A-Z]):', r'/\1', os.path.abspath(path).replace('\\', '/'))
@@ -132,7 +135,7 @@ def install(repo_path: str):
     config_writer.add_section('smart')
     config_writer.set_value('smart', 'enabled', True)
     pre_commit_hook_path = os.path.join(repo_path, '.git', 'hooks', 'pre-commit')
-    if not os.path.isfile(pre_commit_hook_path):
+    if os.path.isfile(pre_commit_hook_path):
         pre_commit_hook = open(pre_commit_hook_path, 'a+')
     else:
         pre_commit_hook = open(pre_commit_hook_path, 'w')
@@ -259,10 +262,12 @@ def pre_commit(repo_path: str):
     repo, status = get_repo(repo_path, RepoStatus.installed_disabled, RepoStatus.installed_enabled)
     if status is RepoStatus.installed_disabled:
         return
-    try:
-        diff = repo.index.diff(repo.head.commit)
-    except ValueError:
-        diff = 0
+    if repo.head.is_valid():
+        diffed_commit = repo.head.commit
+    else:
+        # Repository is empty - use the magic 'Empty commit' instead of HEAD
+        diffed_commit = git.Commit(repo, bytes.fromhex(EMPTY_COMMIT_SHA))
+    diff = repo.index.diff(diffed_commit)
     if not diff:
         return
     changes_file_path = os.path.join(repo_path, CHANGES_FILE_NAME)

@@ -1,5 +1,6 @@
 clang==6.0.0.2
 Click==7.0
+pytest
 git2json==0.2.3
 gitdb2==2.0.5
 GitPython==2.1.11
