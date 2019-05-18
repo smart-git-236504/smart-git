@@ -1,4 +1,9 @@
+from typing import List, Dict, Tuple, Iterable, Callable
+
 import clang.cindex
+
+from cursor_path import CursorPath
+from util import search_ast
 
 """
 For mac clanglib.so should be under:
@@ -7,40 +12,35 @@ For mac clanglib.so should be under:
 
 
 class RenamingDetector:
-    def __init__(self, clang_file_path):
-        clang.cindex.Config.set_library_file(clang_file_path)
-        self.index = clang.cindex.Index.create()
+    def __init__(self, index: clang.cindex.Index):
+        self.index = index
 
-    def get_renamed_variables(self, first_file, second_file):
-        first_file_translation_unit = self.index.parse(first_file)
-        self.first_file_vars = []
-        self.find_variable_declarations(first_file_translation_unit.cursor, self.first_file_vars)
-        second_file_translation_unit = self.index.parse(second_file)
-        self.second_file_vars = []
-        self.find_variable_declarations(second_file_translation_unit.cursor, self.second_file_vars)
-        return self.match_renamed_variables()
+    def get_renamed_variables(self, file_name: str, first_file: str, second_file: str):
+        def is_variable_definition(cursor):
+            return cursor.is_definition and cursor.kind == clang.cindex.CursorKind.VAR_DECL
+        first_tu = self.index.parse(first_file)
+        second_tu = self.index.parse(second_file)
+        return self.match_renamed_variables(file_name, first_tu,
+                                            list(search_ast(first_tu, file_name, is_variable_definition)), second_tu,
+                                            list(search_ast(second_tu, file_name, is_variable_definition)))
 
-    def match_renamed_variables(self):
-        """
-            Very naive algorithm to detect variable renames between two files.
-        """
-        renamed_vars = {}
-        for var in self.first_file_vars:
-            if var in self.second_file_vars:
-                self.first_file_vars.remove(var)
-                self.second_file_vars.remove(var)
-        for var_first_file, var_second_file in zip(self.first_file_vars, self.second_file_vars):
-            renamed_vars[var_first_file] = var_second_file
-        return renamed_vars
+    @staticmethod
+    def match_renamed_variables(file_name: str, a_tu: clang.cindex.TranslationUnit, a_vars: List[CursorPath],
+                                b_tu: clang.cindex.TranslationUnit, b_vars: List[CursorPath]) -> Dict[CursorPath, str]:
+        a_mismatches = set(a_vars) - set(b_vars)
+        b_mismatches = set(b_vars) - set(a_vars)
+        possible_renames = {
+            variable: {candidate for candidate in b_mismatches if candidate.path[:-1] == variable.path[:-1]}
+            for variable in a_mismatches
+        }
 
-    def find_variable_declarations(self, node, vars_list):
-        """
-            Find all variables declarations in given file cursor (node)
-        """
-        if node.is_definition:
-            if node.kind == clang.cindex.CursorKind.VAR_DECL:
-                print(node.spelling)
-                vars_list.append(node.spelling)
-        # Recurse for children of this node
-        for c in node.get_children():
-            self.find_variable_declarations(c, vars_list)
+        def is_rename(a: CursorPath, b: CursorPath):
+            var_a = a.locate(a_tu, file_name)
+            var_b = b.locate(b_tu, file_name)
+            return var_a.spelling != var_b.spelling and var_a.type.spelling == var_b.type.spelling
+
+        actual_renames = {variable: {candidate for candidate in candidates if is_rename(variable, candidate)}
+                          for variable, candidates in possible_renames.items()}
+
+        return {variable: next(iter(candidates)).locate(b_tu, file_name).spelling
+                for variable, candidates in actual_renames.items() if len(candidates) == 1}

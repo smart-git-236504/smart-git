@@ -1,10 +1,10 @@
 import ast
 import configparser
+import difflib
 import functools
 import json
 import os
 import sys
-import stat
 import re
 import tempfile
 from enum import Enum
@@ -14,10 +14,12 @@ import click
 import git
 import git.repo.fun
 
+from changes.change import Change
+from changes import CHANGE_CLASSES
 from renaming_detector import RenamingDetector
-
-
-CHANGES_FILE_NAME = '.changes'
+from smart_repo import SmartRepo
+from util import get_changes, CHANGES_FILE_NAME
+from repo_state import RepoState
 
 # The SHA1 hash of the 'empty commit' - a magic commit that exists in all git repos
 EMPTY_COMMIT_SHA = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
@@ -29,9 +31,9 @@ def path_for_git(path: str):
 
 PYTHON_PATH = path_for_git(sys.executable)
 
-ALIAS_COMMAND = '!{} {}'.format(PYTHON_PATH, path_for_git(__file__))
+ALIAS_COMMAND = f'!{PYTHON_PATH} {path_for_git(__file__)}'
 
-PRE_COMMIT_HOOK = '{python} {script} pre-commit'.format(python=PYTHON_PATH, script=path_for_git(__file__))
+PRE_COMMIT_HOOK = f'{PYTHON_PATH} {path_for_git(__file__)} pre-commit'
 
 
 @click.group('main')
@@ -87,7 +89,7 @@ class RepoStatus(Enum):
         return RepoStatus.installed_disabled
 
 
-def get_repo(repo_path: str, *expected_statuses: RepoStatus) -> (git.Repo, RepoStatus):
+def get_repo(repo_path: str, *expected_statuses: RepoStatus) -> (SmartRepo, RepoStatus):
     """
     Open a GitPython Repo object for the given repository path.
 
@@ -108,7 +110,7 @@ def get_repo(repo_path: str, *expected_statuses: RepoStatus) -> (git.Repo, RepoS
             err=True
         )
         raise click.Abort
-    return git.Repo(repo_path), current_status
+    return SmartRepo(repo_path), current_status
 
 
 def print_post_status(command):
@@ -117,7 +119,7 @@ def print_post_status(command):
     def wrapped(*args, **kwargs):
         res = command(*args, **{k: v for k, v in kwargs.items() if k != 'silent'})
         if not kwargs['silent']:
-            click.echo('[smart-git] Post status: {}'.format(RepoStatus.of(kwargs['repo_path']).name))
+            click.echo(f'[smart-git] Post status: {RepoStatus.of(kwargs["repo_path"]).name}')
         return res
     return wrapped
 
@@ -202,7 +204,7 @@ def set_alias(local):
     else:
         click.echo('Alias "smart" is already set', err=True)
         raise click.Abort()
-    git.Git('.').config('--global' if not local else '--local', 'alias.smart', '{}'.format(ALIAS_COMMAND))
+    git.Git('.').config('--global' if not local else '--local', 'alias.smart', f'{ALIAS_COMMAND}')
     click.echo('You can now use git smart <command> or (git smart --help)')
 
 
@@ -224,9 +226,7 @@ def clear_alias(local, force):
         raise click.Abort()
     else:
         if current_alias != ALIAS_COMMAND and not force:
-            click.echo(
-                'Alias "smart" is set to a different command ({}). Pass -f to clear it anyway.'.format(current_alias)
-            )
+            click.echo(f'Alias "smart" is set to a different command ({current_alias}). Pass -f to clear it anyway.')
             raise click.Abort()
     git.Git('.').config('--unset', '--global' if not local else '--local', 'alias.smart')
 
@@ -255,6 +255,16 @@ def enable(repo_path: str):
     get_repo(repo_path, RepoStatus.installed_disabled)[0].config_writer().set_value('smart', 'enabled', True)
 
 
+@smart_git.command()
+@repo_path_argument
+def smart_merge(repo_path: str, revision: str):
+    repo, _ = get_repo(repo_path, RepoStatus.installed_enabled)
+    changes_diff: git.Diff = next(diff for diff in repo.index.diff(revision) if diff.a_name == CHANGES_FILE_NAME)
+    diff = difflib.ndiff(changes_diff.a_blob.data_stream.read().splitlines(keepends=True),
+                         changes_diff.b_blob.data_stream.read().splitlines(keepends=True))
+    print(diff)
+
+
 @smart_git.command('pre-commit')
 @repo_path_argument
 def pre_commit(repo_path: str):
@@ -268,28 +278,37 @@ def pre_commit(repo_path: str):
     if status is RepoStatus.installed_disabled:
         return
     if repo.head.is_valid():
-        diffed_commit = repo.head.commit
+        diffed_tree = repo.head.commit.tree
     else:
         # Repository is empty - use the magic 'Empty commit' instead of HEAD
-        diffed_commit = git.Commit(repo, bytes.fromhex(EMPTY_COMMIT_SHA))
-    diff = repo.index.diff(diffed_commit)
-    if not diff:
+        diffed_tree = git.Tree.new_from_sha(repo, bytes.fromhex(EMPTY_COMMIT_SHA))
+        diffed_tree.path = ''
+
+    changes = []
+    # Start with the previous repository state, and attempt to detect changes. When a change is detected, it is applied
+    # to the state and we attempt to detect changes in the new state.
+    state = RepoState(repo, diffed_tree)
+    while True:
+        diff = state.tree.diff()
+        if not diff:
+            break
+        for change_class in CHANGE_CLASSES:
+            new_changes: List[Change] = list(change_class.detect(repo, diff))
+            if new_changes:
+                changes.extend(new_changes)
+                for change in new_changes:
+                    change.apply(repo, state)
+                break
+
+    if not changes:
         return
 
-    actions = []
-    for d in diff:
-        actions.extend(detect_renames(repo, diffed_commit, d.a_path))
-
     changes_file_path = os.path.join(repo_path, CHANGES_FILE_NAME)
-    if os.path.isfile(changes_file_path):
-        with open(changes_file_path, 'r') as changes_file:
-            prev_changes = changes_file.read()
-    else:
-        prev_changes = None
+    prev_changes = get_changes(repo)
 
-    with open(changes_file_path, 'a+') as changes_file:
-        changes_file.write('{}\n'.format(json.dumps(actions)))
-
+    with open(changes_file_path, 'w') as changes_file:
+        changes_file.write('\n'.join(f'{i} {json.dumps([change.to_json() for change in changes])}'
+                                     for i, changes in enumerate(prev_changes + [changes])))
     try:
         repo.index.add([CHANGES_FILE_NAME])
     except OSError:
@@ -303,28 +322,7 @@ def pre_commit(repo_path: str):
                    'manually before committing (e.g. `git add .`)', err=True)
         raise click.Abort
 
-    click.echo('[smart-git] Recorded {} change{}.'.format(len(diff), '' if len(diff) == 1 else 's'))
-
-
-def detect_renames(repo: git.Repo, diff_commit: git.Commit, file_path_spec: str) -> Dict[str, Any]:
-    if not any(file_path_spec.lower().endswith(extension) for extension in ('.c', '.h', '.cpp', '.hpp', '.cc', '.hh',
-                                                                            '.cxx', '.hxx', '.ixx', '.mxx', '.ipp',
-                                                                            '.mpp')):
-        return
-    try:
-        diff_commit.tree
-    except IndexError:
-        # Diffed-against commit has no tree. This can happen with an empty repository.
-        return
-    first_file = diff_commit.tree[file_path_spec].data_stream.read()
-    with tempfile.NamedTemporaryFile(suffix='.cpp') as temp_code_file:
-        temp_code_file.write(first_file)
-        temp_code_file.flush()
-        renaming_detector = RenamingDetector(ast.literal_eval(repo.config_reader().get_value('smart', 'libclangPath')))
-        for from_name, to_name in renaming_detector.get_renamed_variables(temp_code_file.name,
-                                                                          os.path.join(repo.working_dir,
-                                                                                       file_path_spec)).items():
-            yield {'action': 'rename', 'from': from_name, 'to': to_name}
+    click.echo(f'[smart-git] Recorded {len(changes)} change{"" if len(changes) == 1 else "s"}.')
 
 
 def main():

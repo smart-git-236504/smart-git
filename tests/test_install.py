@@ -2,8 +2,12 @@ import os
 
 import pytest
 from git import Repo, SymbolicReference
+
+import repo_state
 import smart_git
 from click.testing import CliRunner
+
+import util
 
 
 def test_not_a_repo(empty_repo: Repo):
@@ -26,7 +30,7 @@ def test_install(smart_repo: Repo):
     assert smart_git.RepoStatus.of(smart_repo.working_dir) == smart_git.RepoStatus.installed_enabled
     diffs = _test_commit(smart_repo)
     assert len(diffs) == 2
-    assert any(d.a_path == d.b_path == smart_git.CHANGES_FILE_NAME for d in diffs)
+    assert any(d.a_path == d.b_path == util.CHANGES_FILE_NAME for d in diffs)
 
 
 def test_uninstall(smart_repo, runner: CliRunner):
@@ -39,7 +43,7 @@ def test_disable(disabled_smart_repo):
 
     diffs = _test_commit(disabled_smart_repo)
     assert len(diffs) == 1
-    assert diffs[0].a_path != smart_git.CHANGES_FILE_NAME
+    assert diffs[0].a_path != util.CHANGES_FILE_NAME
 
 
 def test_enable(disabled_smart_repo, runner: CliRunner):
