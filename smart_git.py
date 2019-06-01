@@ -1,25 +1,22 @@
-import ast
 import configparser
 import difflib
 import functools
 import json
 import os
-import sys
 import re
-import tempfile
+import sys
 from enum import Enum
-from typing import Dict, List, Any
+from typing import List
 
 import click
 import git
 import git.repo.fun
 
-from changes.change import Change
 from changes import CHANGE_CLASSES
-from renaming_detector import RenamingDetector
+from changes.change import Change
+from repo_state import RepoState, TreeBackedRepoState
 from smart_repo import SmartRepo
-from util import get_changes, CHANGES_FILE_NAME
-from repo_state import RepoState
+from utils.repo import get_changes, CHANGES_FILE_NAME
 
 # The SHA1 hash of the 'empty commit' - a magic commit that exists in all git repos
 EMPTY_COMMIT_SHA = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
@@ -287,7 +284,7 @@ def pre_commit(repo_path: str):
     changes = []
     # Start with the previous repository state, and attempt to detect changes. When a change is detected, it is applied
     # to the state and we attempt to detect changes in the new state.
-    state = RepoState(repo, diffed_tree)
+    state = TreeBackedRepoState(repo, diffed_tree)
     while True:
         diff = state.tree.diff()
         if not diff:
@@ -296,8 +293,13 @@ def pre_commit(repo_path: str):
             new_changes: List[Change] = list(change_class.detect(repo, diff))
             if new_changes:
                 changes.extend(new_changes)
-                for change in new_changes:
+                applied_changes = []
+                while new_changes:
+                    change = new_changes.pop()
+                    for applied_change in applied_changes:
+                        change = change.transform(repo, applied_change)
                     change.apply(repo, state)
+                    applied_changes.append(change)
                 break
 
     if not changes:

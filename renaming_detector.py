@@ -1,9 +1,9 @@
-from typing import List, Dict, Tuple, Iterable, Callable
+from typing import List, Dict
 
 import clang.cindex
 
 from cursor_path import CursorPath
-from util import search_ast
+from utils.ast import search_ast
 
 """
 For mac clanglib.so should be under:

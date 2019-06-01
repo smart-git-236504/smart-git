@@ -5,9 +5,10 @@ from typing import Dict, Any, Type, List, Iterable
 
 import git
 import unidiff
-from unidiff import Hunk
+from unidiff import Hunk, PatchedFile
 
 from repo_state import RepoState
+from smart_repo import SmartRepo
 from .change import Change, Conflict
 
 
@@ -32,7 +33,7 @@ class TextualChange(Change):
     def removed_line_count(self):
         return self.to_line - self.from_line
 
-    def transform(self: 'TextualChange', other: 'Change') -> 'TextualChange':
+    def transform(self: 'TextualChange', repo: SmartRepo, other: 'Change') -> 'TextualChange':
         if isinstance(other, TextualChange):
             if other.file_path != self.file_path:
                 # A textual change in another line - we don't care.
@@ -55,7 +56,7 @@ class TextualChange(Change):
                                                                          for line in self.content]})
 
     @classmethod
-    def from_json(cls: Type['TextualChange'], json: Dict[str, Any]) -> 'TextualChange':
+    def from_json(cls: Type['TextualChange'], repo: SmartRepo, json: Dict[str, Any]) -> 'TextualChange':
         return TextualChange(file_path=json['file_path'], from_line=json['from_line'], to_line=json['to_line'],
                              content=[line.encode('utf-8') for line in json['content']])
 
@@ -70,5 +71,8 @@ class TextualChange(Change):
                                                                              tofile=file_diff.b_path)))
             for hunk in diff[0]:
                 assert isinstance(hunk, Hunk)
-                yield TextualChange(file_diff.a_path, hunk.source_start, hunk.source_start + hunk.removed,
-                                    [line.value.encode('utf-8') for line in hunk if line.is_added])
+                for i, line in enumerate(hunk, hunk.source_start - 1):
+                    if line.is_removed:
+                        yield TextualChange(file_diff.a_path, i, i + 1, [])
+                    elif line.is_added:
+                        yield TextualChange(file_diff.a_path, i, i, [line.value.encode('utf-8')])

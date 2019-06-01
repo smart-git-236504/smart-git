@@ -3,7 +3,8 @@ import git
 from changes.file_operations import FileAdded
 from changes.textual_change import TextualChange
 from tests.conftest import commit
-from util import get_changes, as_lines
+from utils.repo import get_changes
+from utils.file import as_lines
 
 
 @commit({'a.c': '''

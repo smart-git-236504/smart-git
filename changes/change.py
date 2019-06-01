@@ -54,9 +54,10 @@ class Change(metaclass=abc.ABCMeta):
 
     @classmethod
     @abc.abstractmethod
-    def from_json(cls: Type[T], json: Dict[str, Any]) -> T:
+    def from_json(cls: Type[T], repo: SmartRepo, json: Dict[str, Any]) -> T:
         """
         Restore a change from a previously serialized JSON.
+        :param repo: The repository in which the change is being restored.
         :param json: A JSON representation of a Change of this type (as returned from `to_json`)
         :return: A Change object of the same type.
         """

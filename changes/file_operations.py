@@ -5,6 +5,7 @@ import git
 
 from changes.change import Change, T, Conflict
 from repo_state import RepoState
+from smart_repo import SmartRepo
 
 
 class FileAdded(Change):
@@ -37,7 +38,7 @@ class FileAdded(Change):
                                                          'content': [line.decode('ascii') for line in self.content]})
 
     @classmethod
-    def from_json(cls: Type[T], json: Dict[str, Any]) -> T:
+    def from_json(cls, repo: SmartRepo, json: Dict[str, Any]) -> 'FileAdded':
         return FileAdded(file_name=json['file_name'], content=[line.encode('ascii') for line in json['content']])
 
     @classmethod
@@ -79,7 +80,7 @@ class FileDeleted(Change):
         return dict(super(FileDeleted, self).to_json(), **{'file_name': self.file_name, 'content': self.content})
 
     @classmethod
-    def from_json(cls: Type[T], json: Dict[str, Any]) -> T:
+    def from_json(cls, repo: SmartRepo, json: Dict[str, Any]) -> 'FileDeleted':
         return FileDeleted(file_name=json['file_name'], content=json['content'])
 
     @classmethod
@@ -126,7 +127,7 @@ class FileRenamed(Change):
         return dict(super(FileRenamed, self).to_json(), **{'from_name': self.from_name, 'to_name': self.to_name})
 
     @classmethod
-    def from_json(cls, json: Dict[str, Any]) -> 'FileRenamed':
+    def from_json(cls, repo: SmartRepo, json: Dict[str, Any]) -> 'FileRenamed':
         return FileRenamed(from_name=json['from_name'], to_name=json['to_name'])
 
     @classmethod

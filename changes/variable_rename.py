@@ -8,7 +8,8 @@ from cursor_path import CursorPath
 from renaming_detector import RenamingDetector
 from repo_state import RepoState
 from smart_repo import SmartRepo
-from util import search_ast, Replacement, apply_replacements
+from utils.ast import search_ast
+from utils.file import apply_replacements, file_from_blob, file_from_text, Replacement
 
 
 class VariableRenamed(Change):
@@ -23,7 +24,7 @@ class VariableRenamed(Change):
 
     def apply(self, repo: SmartRepo, repo_state: RepoState) -> None:
         file_text = repo_state[self.path.file]
-        with repo.file_from_text(file_text, self.path.file) as file:
+        with file_from_text(file_text, self.path.file) as file:
             translation_unit = repo.get_cindex().parse(file.name)
             variable = self.path.locate(translation_unit, self.path.file)
             usages = search_ast(translation_unit, self.path.file,
@@ -55,7 +56,7 @@ class VariableRenamed(Change):
     @classmethod
     def detect(cls: Type['VariableRenamed'], repo: SmartRepo, diff: git.DiffIndex) -> Iterable['VariableRenamed']:
         for m in diff.iter_change_type('M'):
-            with repo.file_from_blob(m.a_blob) as a, repo.file_from_blob(m.b_blob) as b:
+            with file_from_blob(m.a_blob) as a, file_from_blob(m.b_blob) as b:
                 for renamed, new_name in RenamingDetector(repo.get_cindex()).get_renamed_variables(m.a_path, a.name,
                                                                                                    b.name).items():
                     yield VariableRenamed(renamed, new_name)

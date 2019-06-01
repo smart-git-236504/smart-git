@@ -1,13 +1,12 @@
 from clang.cindex import CursorKind
-from git import Repo
 
 from changes.file_operations import FileAdded
 from changes.variable_rename import VariableRenamed
-from cursor_path import CursorPath
 from repo_state import RepoState
 from smart_repo import SmartRepo
 from tests.conftest import commit
-from util import get_changes, as_lines, search_ast
+from utils.repo import get_changes
+from utils.file import as_lines
 
 
 @commit({'a.c': '''int main() {
