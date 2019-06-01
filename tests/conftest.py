@@ -62,30 +62,58 @@ def disabled_smart_repo(smart_repo, runner: CliRunner) -> Repo:
     return smart_repo
 
 
-def commit(files: Dict[str, str], tag: str=None):
-    return pytest.mark.commit(files=files, tag=tag)
+def commit(files: Dict[str, str], tag: Optional[str]=None, on: str='master'):
+    return pytest.mark.commit(files=files, tag=tag, on=on)
+
+
+def merge(what: str, tag: Optional[str]=None, on: str='master'):
+    return pytest.mark.merge(what=what, tag=tag, on=on)
 
 
 @pytest.hookimpl(hookwrapper=True)
 def pytest_pyfunc_call(pyfuncitem):
     for name, repo in pyfuncitem.funcargs.items():
         if isinstance(repo, Repo):
-            for i, commit_marker in enumerate(reversed(list(pyfuncitem.iter_markers('commit')))):
-                if commit_marker.kwargs.get('applied', False):
+            for i, marker in enumerate(reversed(list(pyfuncitem.iter_markers()))):
+                marker_name = getattr(marker, 'name', None)
+                if marker_name not in ('commit', 'merge'):
+                    continue
+                if marker.kwargs.get('applied', False):
                     continue
                 else:
-                    commit_marker.kwargs['applied'] = True
-                file_spec: Dict[str, str] = commit_marker.kwargs['files']
-                tag_name: Optional[str] = commit_marker.kwargs['tag']
-                for file_name, file_content in file_spec.items():
-                    with open(os.path.join(repo.working_dir, file_name), 'wb') as file:
-                        file.write(file_content.encode('utf-8'))
-                repo.index.add(file_spec.keys())
-                if smart_git.RepoStatus.of(repo.working_dir) == smart_git.RepoStatus.installed_enabled:
-                    result = CliRunner().invoke(smart_git.pre_commit, [repo.working_dir])
-                    if result.exception:
-                        raise result.exception
-                repo.index.commit(message=repr(tag_name or f'@commit commit #{i + 1}'), skip_hooks=True)
+                    marker.kwargs['applied'] = True
+                tag_name: Optional[str] = marker.kwargs['tag']
+                on: str = marker.kwargs['on']
+                original_branch = repo.head.reference
+                if on != 'master':
+                    for head in repo.heads:
+                        if head.name == on:
+                            branch = head
+                            break
+                    else:
+                        branch = repo.create_head(on)
+                    repo.head.reference = branch
+                    repo.head.reset(index=True, working_tree=True)
+                if marker_name == 'commit':
+                    file_spec: Dict[str, str] = marker.kwargs['files']
+                    for file_name, file_content in file_spec.items():
+                        with open(os.path.join(repo.working_dir, file_name), 'wb') as file:
+                            file.write(file_content.encode('utf-8'))
+                    repo.index.add(file_spec.keys())
+                    if smart_git.RepoStatus.of(repo.working_dir) == smart_git.RepoStatus.installed_enabled:
+                        result = CliRunner().invoke(smart_git.pre_commit, [repo.working_dir])
+                        if result.exception:
+                            raise result.exception
+                    repo.index.commit(message=repr(tag_name or f'@commit commit #{i + 1}'), skip_hooks=True)
+                else:
+                    what: str = marker.kwargs['what']
+                    if smart_git.RepoStatus.of(repo.working_dir) == smart_git.RepoStatus.installed_enabled:
+                        result = CliRunner().invoke(smart_git.merge, [repo.working_dir, what])
+                        if result.exception:
+                            raise result.exception
                 if tag_name is not None:
                     repo.create_tag(tag_name)
+                if on != 'master':
+                    repo.head.reference = original_branch
+                    repo.head.reset(index=True, working_tree=True)
     yield

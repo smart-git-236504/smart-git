@@ -3,7 +3,7 @@ from typing import Iterable, Dict, Any, Optional, Type
 import git
 from clang.cindex import CursorKind, SourceRange, SourceLocation
 
-from changes.change import Change, T
+from changes.change import Change, T, Conflict
 from cursor_path import CursorPath
 from renaming_detector import RenamingDetector
 from repo_state import RepoState
@@ -43,14 +43,18 @@ class VariableRenamed(Change):
             file_text = apply_replacements(file_text, replacements)
         repo_state[self.path.file] = file_text
 
-    def transform(self: T, repo: git.Repo, other: 'Change') -> Optional[T]:
-        pass
+    def transform(self, repo: git.Repo, other: 'Change') -> Optional['VariableRenamed']:
+        if isinstance(other, VariableRenamed) and other.path == self.path:
+            if other.new_name != self.new_name:
+                raise Conflict
+            return None
+        return self
 
     def to_json(self) -> Dict[str, Any]:
         return dict(super(VariableRenamed, self).to_json(), **{'path': self.path.to_json(), 'new_name': self.new_name})
 
     @classmethod
-    def from_json(cls, json: Dict[str, Any]) -> 'VariableRenamed':
+    def from_json(cls, repo: SmartRepo, json: Dict[str, Any]) -> 'VariableRenamed':
         return cls(path=CursorPath.from_json(json['path']), new_name=json['new_name'])
 
     @classmethod

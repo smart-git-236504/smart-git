@@ -34,8 +34,7 @@ class SubASTInserted(Change):
             else:
                 to_location = cursor.extent.end
         else:
-            from_location = SourceLocation.from_offset(translation_unit, siblings[insertion_point].extent.end.file,
-                                                       siblings[insertion_point].extent.end.offset + 1)
+            from_location = siblings[insertion_point].extent.end
             self.predecessor_path = ast_path.drop(1).appended(parent_cursor, siblings[insertion_point])
             to_location = cursor.extent.end
         self.from_location = from_location.offset
@@ -57,8 +56,7 @@ class SubASTInserted(Change):
             from_location = siblings[0].extent.start
         else:
             predecessor_cursor = self.predecessor_path.locate(ast, self.predecessor_path.file)
-            from_location = SourceLocation.from_offset(ast, predecessor_cursor.extent.end.file,
-                                                       predecessor_cursor.extent.end.offset + 1)
+            from_location = predecessor_cursor.extent.end
         file_content = b''.join(repo_state[self.parent_path.file])
         new_content = file_content[:from_location.offset] \
                       + b''.join(self.file_lines)[self.from_location:self.to_location + 1]\

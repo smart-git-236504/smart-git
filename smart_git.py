@@ -11,12 +11,13 @@ from typing import List
 import click
 import git
 import git.repo.fun
+import unidiff
 
 from changes import CHANGE_CLASSES
 from changes.change import Change
 from repo_state import RepoState, TreeBackedRepoState
 from smart_repo import SmartRepo
-from utils.repo import get_changes, CHANGES_FILE_NAME
+from utils.repo import get_changes, CHANGES_FILE_NAME, decode_changes_line, encode_changes_line, encode_changes
 
 # The SHA1 hash of the 'empty commit' - a magic commit that exists in all git repos
 EMPTY_COMMIT_SHA = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
@@ -47,6 +48,7 @@ def smart_git():
 repo_path_argument = click.argument('repo_path',
                                     type=click.Path(exists=True, file_okay=False, dir_okay=True, writable=True),
                                     default='.')
+
 
 class RepoStatus(Enum):
     """ Denotes the status of the repo w.r.t. our plugin. """
@@ -254,12 +256,40 @@ def enable(repo_path: str):
 
 @smart_git.command()
 @repo_path_argument
-def smart_merge(repo_path: str, revision: str):
+@click.argument('revision', type=click.STRING)
+def merge(repo_path: str, revision: str):
     repo, _ = get_repo(repo_path, RepoStatus.installed_enabled)
-    changes_diff: git.Diff = next(diff for diff in repo.index.diff(revision) if diff.a_name == CHANGES_FILE_NAME)
-    diff = difflib.ndiff(changes_diff.a_blob.data_stream.read().splitlines(keepends=True),
-                         changes_diff.b_blob.data_stream.read().splitlines(keepends=True))
-    print(diff)
+    rev = repo.rev_parse(revision)
+    assert isinstance(rev, git.Commit)
+    changes_diff: git.Diff = next(diff for diff in repo.index.diff(revision) if diff.a_path == CHANGES_FILE_NAME)
+    a_changes = changes_diff.a_blob.data_stream.read().splitlines(keepends=True)
+    b_changes = changes_diff.b_blob.data_stream.read().splitlines(keepends=True)
+    diff = unidiff.PatchSet.from_string(''.join(difflib.unified_diff([line.decode('utf-8') for line in a_changes],
+                                                                     [line.decode('utf-8') for line in b_changes],
+                                                                     fromfile=CHANGES_FILE_NAME,
+                                                                     tofile=CHANGES_FILE_NAME)))
+    total_changes = [decode_changes_line(repo, line)[1] for line in a_changes]
+    changes_to_rebase = [decode_changes_line(repo, line.value.encode('utf-8'))[1]
+                         for hunk in diff[0] for line in hunk if line.is_added]
+    missing_changes = [decode_changes_line(repo, line.value.encode('utf-8'))[1]
+                       for hunk in diff[0] for line in hunk if line.is_removed]
+    state = TreeBackedRepoState(repo, repo.head.commit.tree)
+    for change_list in changes_to_rebase:
+        transformed_changes = []
+        for change in change_list:
+            for missing_change_list in missing_changes:
+                for missing_change in missing_change_list:
+                    if change is not None:
+                        change = change.transform(repo, missing_change)
+            if change is not None:
+                transformed_changes.append(change)
+                change.apply(repo, state)
+        total_changes.append(transformed_changes)
+    state[CHANGES_FILE_NAME] = encode_changes(total_changes)
+    git.IndexFile.from_tree(repo, state.tree).write(repo.index.path)
+    repo.index.commit(f"Smart merge branch '{revision}' into {repo.head.reference.name}",
+                      parent_commits=(repo.head.commit, rev), skip_hooks=True)
+    repo.index.reset(head=True, working_tree=True)
 
 
 @smart_git.command('pre-commit')
@@ -298,8 +328,11 @@ def pre_commit(repo_path: str):
                     change = new_changes.pop()
                     for applied_change in applied_changes:
                         change = change.transform(repo, applied_change)
-                    change.apply(repo, state)
-                    applied_changes.append(change)
+                        if change is None:
+                            break
+                    else:
+                        change.apply(repo, state)
+                        applied_changes.append(change)
                 break
 
     if not changes:
@@ -308,9 +341,8 @@ def pre_commit(repo_path: str):
     changes_file_path = os.path.join(repo_path, CHANGES_FILE_NAME)
     prev_changes = get_changes(repo)
 
-    with open(changes_file_path, 'w') as changes_file:
-        changes_file.write('\n'.join(f'{i} {json.dumps([change.to_json() for change in changes])}'
-                                     for i, changes in enumerate(prev_changes + [changes])))
+    with open(changes_file_path, 'wb') as changes_file:
+        changes_file.write(b''.join(encode_changes(prev_changes + [changes])))
     try:
         repo.index.add([CHANGES_FILE_NAME])
     except OSError:
